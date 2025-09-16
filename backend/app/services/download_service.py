@@ -14,9 +14,19 @@ from app.utils.helpers import (
 
 
 class DownloadService:
+    _instance = None
+    _initialized = False
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(DownloadService, cls).__new__(cls)
+        return cls._instance
+
     def __init__(self):
-        self.download_progress: Dict[str, Dict[str, Any]] = {}
-        self.progress_subscribers: Dict[str, list] = {}
+        if not self._initialized:
+            self.download_progress: Dict[str, Dict[str, Any]] = {}
+            self.progress_subscribers: Dict[str, list] = {}
+            DownloadService._initialized = True
 
     def get_video_info(self, url: str) -> dict:
         """Extract video information using yt-dlp"""
@@ -101,31 +111,61 @@ class DownloadService:
         formats = []
         seen_formats = set()
 
-        for f in info.get('formats', []):
-            # Skip audio-only formats
-            if f.get('vcodec') == 'none' and f.get('acodec') != 'none':
-                continue
+        # Get all available formats
+        all_formats = info.get('formats', [])
+        
+        # Create quality options based on available heights
+        available_heights = set()
+        for f in all_formats:
+            if f.get('height') and f.get('vcodec') != 'none':
+                available_heights.add(f.get('height'))
 
-            # Skip video-only formats without audio
-            if f.get('vcodec') != 'none' and f.get('acodec') == 'none':
-                continue
+        # Create format options for common qualities
+        quality_options = [
+            {'height': 1080, 'label': '1080p'},
+            {'height': 720, 'label': '720p'},
+            {'height': 480, 'label': '480p'},
+            {'height': 360, 'label': '360p'},
+            {'height': 240, 'label': '240p'},
+        ]
 
-            resolution = get_resolution_string(f)
-            format_key = (f.get('height', 0), f.get('ext', ''), f.get('format_id', ''))
-            if format_key in seen_formats:
-                continue
-            seen_formats.add(format_key)
+        for quality in quality_options:
+            height = quality['height']
+            if height in available_heights:
+                # Find the best format for this quality
+                best_format = None
+                for f in all_formats:
+                    if (f.get('height') == height and 
+                        f.get('vcodec') != 'none' and 
+                        f.get('ext') in ['mp4', 'webm']):
+                        if not best_format or f.get('filesize', 0) > best_format.get('filesize', 0):
+                            best_format = f
 
-            # Only include formats with both video and audio
-            if f.get('vcodec') and f.get('vcodec') != 'none' and f.get('acodec') and f.get('acodec') != 'none':
-                formats.append(VideoFormat(
-                    format_id=f['format_id'],
-                    ext=f.get('ext', 'mp4'),
-                    resolution=resolution,
-                    filesize=f.get('filesize'),
-                    vcodec=f.get('vcodec', 'unknown'),
-                    acodec=f.get('acodec', 'unknown')
-                ))
+                if best_format:
+                    resolution = get_resolution_string(best_format)
+                    formats.append(VideoFormat(
+                        format_id=f"best[height<={height}]",
+                        ext=best_format.get('ext', 'mp4'),
+                        resolution=resolution,
+                        filesize=best_format.get('filesize'),
+                        vcodec=best_format.get('vcodec', 'unknown'),
+                        acodec='bestaudio'  # Will be merged during download
+                    ))
+
+        # If no specific qualities found, add the best available
+        if not formats:
+            for f in all_formats:
+                if f.get('vcodec') != 'none' and f.get('ext') in ['mp4', 'webm']:
+                    resolution = get_resolution_string(f)
+                    formats.append(VideoFormat(
+                        format_id=f['format_id'],
+                        ext=f.get('ext', 'mp4'),
+                        resolution=resolution,
+                        filesize=f.get('filesize'),
+                        vcodec=f.get('vcodec', 'unknown'),
+                        acodec='bestaudio'
+                    ))
+                    break
 
         def sort_key(format_item):
             height = 0
@@ -139,9 +179,9 @@ class DownloadService:
 
         formats.sort(key=sort_key)
 
-        print(f"📋 Found {len(formats)} video formats with audio")
-        for fmt in formats[:5]:
-            print(f"   - {fmt.resolution} {fmt.ext.upper()} ({fmt.format_id}) - {fmt.vcodec}/{fmt.acodec}")
+        print(f"📋 Found {len(formats)} video format options")
+        for fmt in formats:
+            print(f"   - {fmt.resolution} {fmt.ext.upper()} - {fmt.vcodec}")
 
         return VideoInfo(
             title=info.get('title', 'Unknown Title'),
@@ -195,7 +235,7 @@ class DownloadService:
 
             # Simple download options with audio
             ydl_opts = {
-                'format': 'best[height<=720]+bestaudio/best[height<=720]/best',
+                'format': 'best[height<=1080]+bestaudio/best[height<=720]+bestaudio/best[height<=480]+bestaudio/best',
                 'outtmpl': output_path,
                 'progress_hooks': [self.progress_hook],
                 'quiet': False,
@@ -256,6 +296,124 @@ class DownloadService:
             self.download_progress[download_id] = progress_data
             self._notify_subscribers(download_id, progress_data)
 
+    async def download_video_quality(self, url: str, quality: str) -> str:
+        """Download video with specific quality"""
+        download_id = get_download_id(url, quality)
+        
+        print(f"⬇️ Starting {quality} download: {url}")
+        print(f"📋 Download ID: {download_id}")
+
+        # Check if already downloading
+        if download_id in self.download_progress:
+            existing = self.download_progress[download_id]
+            if existing['status'] in ['downloading']:
+                return download_id
+
+        # Initialize progress tracking
+        self.download_progress[download_id] = {
+            'status': 'downloading',
+            'progress': 0,
+            'downloaded_bytes': 0,
+            'total_bytes': 0,
+            'speed': "0 B/s",
+            'eta': "Unknown",
+            'updated_at': datetime.now().isoformat()
+        }
+
+        # Start download in background
+        asyncio.create_task(self._download_task_quality(url, download_id, quality))
+        return download_id
+
+    async def _download_task_quality(self, url: str, download_id: str, quality: str):
+        """Background task for quality-specific download"""
+        try:
+            # Get video info for title
+            loop = asyncio.get_event_loop()
+            with ThreadPoolExecutor() as executor:
+                info = await loop.run_in_executor(executor, self.get_video_info, url)
+
+            title = info.get('title', 'Unknown Title')
+            safe_title = sanitize_filename(title)
+
+            # Prepare output filename
+            output_filename = f"{safe_title}_{quality}.mp4"
+            output_path = os.path.join(DOWNLOADS_DIR, output_filename)
+
+            # Quality-specific format selection
+            if quality == "1080p":
+                format_selector = "best[height<=1080]+bestaudio/best[height<=1080]/best"
+            elif quality == "720p":
+                format_selector = "best[height<=720]+bestaudio/best[height<=720]/best"
+            elif quality == "480p":
+                format_selector = "best[height<=480]+bestaudio/best[height<=480]/best"
+            elif quality == "360p":
+                format_selector = "best[height<=360]+bestaudio/best[height<=360]/best"
+            else:
+                format_selector = "best+bestaudio/best"
+
+            # Download options with quality-specific format
+            ydl_opts = {
+                'format': format_selector,
+                'outtmpl': output_path,
+                'progress_hooks': [self.progress_hook],
+                'quiet': False,
+                'no_warnings': False,
+                'extractor_retries': 3,
+                'fragment_retries': 3,
+                'retries': 3,
+                'http_chunk_size': 1048576,
+                'concurrent_fragment_downloads': 1,
+                'sleep_interval': 2,
+                'max_sleep_interval': 10,
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                },
+                'postprocessors': [{
+                    'key': 'FFmpegVideoConvertor',
+                    'preferedformat': 'mp4',
+                }],
+                'merge_output_format': 'mp4',
+                'prefer_ffmpeg': True,
+            }
+
+            def download_video_sync():
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info_dict = ydl.extract_info(url, download=False)
+                    info_dict['_download_id'] = download_id
+                    print(f"🔍 Info extracted, starting {quality} download with ID: {download_id}")
+                    ydl.download([url])
+
+            # Run download in thread pool
+            with ThreadPoolExecutor() as executor:
+                await loop.run_in_executor(executor, download_video_sync)
+
+            # Check if file was downloaded successfully
+            if os.path.exists(output_path):
+                progress_data = {
+                    'status': 'completed',
+                    'progress': 100,
+                    'filename': output_filename,
+                    'file_path': output_path,
+                    'updated_at': datetime.now().isoformat()
+                }
+                self.download_progress[download_id] = progress_data
+                self._notify_subscribers(download_id, progress_data)
+                print(f"✅ {quality} download completed: {output_filename}")
+            else:
+                raise Exception("File was not downloaded")
+
+        except Exception as e:
+            error_msg = str(e)
+            print(f"❌ {quality} download failed: {error_msg}")
+
+            progress_data = {
+                'status': 'failed',
+                'error': error_msg,
+                'updated_at': datetime.now().isoformat()
+            }
+            self.download_progress[download_id] = progress_data
+            self._notify_subscribers(download_id, progress_data)
+
     def get_download_progress(self, download_id: str) -> dict:
         """Get current download progress"""
         return self.download_progress.get(download_id, {})
@@ -272,3 +430,7 @@ class DownloadService:
             print(f"✅ Download cancelled: {download_id}")
             return True
         return False
+
+
+# Create singleton instance
+download_service = DownloadService()

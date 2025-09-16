@@ -319,8 +319,7 @@ export default function YouTubeDownloader() {
             </div>
           </div>
           <h1 className="text-5xl font-bold bg-gradient-to-r from-gray-900 via-blue-900 to-purple-900 bg-clip-text text-transparent mb-4">
-            YouTube Video Downloader
-          </h1>
+              YouTube Video Downloader </h1>
           <p className="text-xl text-gray-600 max-w-2xl mx-auto">
             Download YouTube videos in various formats and resolutions with lightning-fast speed
           </p>

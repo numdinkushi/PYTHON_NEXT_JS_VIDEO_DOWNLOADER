@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import ALLOWED_ORIGINS, HOST, PORT, DOWNLOADS_DIR
-from app.api import video_info, download, progress
+from app.api import video_info, download, progress, download_quality
 
 app = FastAPI(title="YouTube Downloader API")
 
@@ -19,6 +19,7 @@ app.add_middleware(
 app.include_router(video_info.router, tags=["video-info"])
 app.include_router(download.router, tags=["download"])
 app.include_router(progress.router, tags=["progress"])
+app.include_router(download_quality.router, tags=["download-quality"])
 
 
 @app.get("/")
