@@ -33,7 +33,7 @@ def update_yt_dlp():
 
 
 # Call this at startup
-update_yt_dlp()
+# update_yt_dlp()
 
 app = FastAPI(title="YouTube Downloader API")
 
