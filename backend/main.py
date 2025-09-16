@@ -862,7 +862,7 @@ async def download_video_simple(request: VideoInfoRequest):
 
             # Simple download options - minimal configuration
             ydl_opts = {
-                'format': 'worst[ext=mp4]/worst',
+                'format': 'best[height<=720]+bestaudio/best[height<=720]/best',
                 'outtmpl': output_path,
                 'progress_hooks': [progress_hook],
                 'quiet': False,
