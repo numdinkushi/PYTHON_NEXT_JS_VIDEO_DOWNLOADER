@@ -1,9 +1,8 @@
 from fastapi import APIRouter, HTTPException
 from app.models.schemas import VideoInfoRequest, DownloadResponse
-from app.services.download_service import DownloadService
+from app.services.download_service import download_service
 
 router = APIRouter()
-download_service = DownloadService()
 
 
 @router.post("/download-simple", response_model=DownloadResponse)

@@ -2,13 +2,21 @@ import json
 import asyncio
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
-from app.services.download_service import DownloadService
+from app.services.download_service import download_service
 
 router = APIRouter()
-download_service = DownloadService()
 
 
 @router.get("/download-progress/{download_id}")
+async def get_download_progress(download_id: str):
+    """Get current download progress"""
+    progress = download_service.get_download_progress(download_id)
+    if not progress:
+        raise HTTPException(status_code=404, detail="Download not found")
+    return progress
+
+
+@router.get("/download-progress-stream/{download_id}")
 async def get_download_progress_stream(download_id: str):
     """Stream download progress in real-time using Server-Sent Events"""
     print(f"📊 Progress stream request for: {download_id}")
